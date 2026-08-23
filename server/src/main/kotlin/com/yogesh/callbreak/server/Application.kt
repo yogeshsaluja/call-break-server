@@ -23,7 +23,8 @@ const val DEFAULT_PORT = 8080
 
 fun main() {
     // 0.0.0.0 so the Android emulator can reach it via 10.0.2.2.
-    embeddedServer(CIO, port = DEFAULT_PORT, host = "0.0.0.0") { module() }.start(wait = true)
+    val port = System.getenv("PORT")?.toIntOrNull() ?: DEFAULT_PORT
+    embeddedServer(CIO, port = port, host = "0.0.0.0") { module() }.start(wait = true)
 }
 
 fun Application.module() {

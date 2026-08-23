@@ -1,12 +1,12 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<testsuite name="com.yogesh.callbreak.server.ApplicationWsTest" tests="3" skipped="0" failures="0" errors="0" timestamp="2026-08-15T21:12:45.927Z" hostname="Mac.lan" time="0.88">
+<testsuite name="com.yogesh.callbreak.server.ApplicationWsTest" tests="3" skipped="0" failures="0" errors="0" timestamp="2026-08-23T17:22:01.515Z" hostname="Mac.lan" time="1.001">
   <properties/>
-  <testcase name="joiningAnUnknownCode_returnsError" classname="com.yogesh.callbreak.server.ApplicationWsTest" time="0.829"/>
-  <testcase name="createThenJoinByCode_assignsSeats_andStartDealsBothClients" classname="com.yogesh.callbreak.server.ApplicationWsTest" time="0.033"/>
-  <testcase name="quickMatch_pairsTwoClientsIntoTheSameRoom" classname="com.yogesh.callbreak.server.ApplicationWsTest" time="0.015"/>
-  <system-out><![CDATA[02:42:46.312 [DefaultDispatcher-worker-2 @call-context#6] INFO  io.ktor.test - No ktor.deployment.watch patterns specified, automatic reload is not active.
-02:42:46.762 [DefaultDispatcher-worker-11 @call-context#35] INFO  io.ktor.test - No ktor.deployment.watch patterns specified, automatic reload is not active.
-02:42:46.795 [DefaultDispatcher-worker-1 @call-context#85] INFO  io.ktor.test - No ktor.deployment.watch patterns specified, automatic reload is not active.
+  <testcase name="joiningAnUnknownCode_returnsError" classname="com.yogesh.callbreak.server.ApplicationWsTest" time="0.939"/>
+  <testcase name="createThenJoinByCode_assignsSeats_andStartDealsBothClients" classname="com.yogesh.callbreak.server.ApplicationWsTest" time="0.039"/>
+  <testcase name="quickMatch_pairsTwoClientsIntoTheSameRoom" classname="com.yogesh.callbreak.server.ApplicationWsTest" time="0.02"/>
+  <system-out><![CDATA[22:52:01.882 [DefaultDispatcher-worker-2 @call-context#6] INFO  io.ktor.test - No ktor.deployment.watch patterns specified, automatic reload is not active.
+22:52:02.460 [DefaultDispatcher-worker-4 @call-context#35] INFO  io.ktor.test - No ktor.deployment.watch patterns specified, automatic reload is not active.
+22:52:02.499 [DefaultDispatcher-worker-9 @call-context#85] INFO  io.ktor.test - No ktor.deployment.watch patterns specified, automatic reload is not active.
 ]]></system-out>
   <system-err><![CDATA[]]></system-err>
 </testsuite>
