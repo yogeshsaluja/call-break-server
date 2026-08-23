@@ -1,0 +1,14 @@
+# The image only needs the pre-built distribution copied by the Dockerfile
+# (server/build/install/server). Keep the build context small by excluding everything
+# else — Gradle caches, IDE files, other build outputs, VCS.
+.gradle/
+.idea/
+.git/
+*.iml
+
+# Exclude build outputs, then re-include only the installDist directory the image copies.
+build/
+*/build/
+!server/build/
+server/build/*
+!server/build/install/
