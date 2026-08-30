@@ -1,9 +1,0 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<testsuite name="com.yogesh.callbreak.server.RoomTest" tests="3" skipped="0" failures="0" errors="0" timestamp="2026-08-23T17:22:02.518Z" hostname="Mac.lan" time="0.038">
-  <properties/>
-  <testcase name="singleHuman_fillsEmptySeatsWithBots_andPlaysToGameOver" classname="com.yogesh.callbreak.server.RoomTest" time="0.034"/>
-  <testcase name="outOfTurnPlay_isRejected_withError" classname="com.yogesh.callbreak.server.RoomTest" time="0.002"/>
-  <testcase name="host_getsSouth_secondPlayer_getsWest" classname="com.yogesh.callbreak.server.RoomTest" time="0.001"/>
-  <system-out><![CDATA[]]></system-out>
-  <system-err><![CDATA[]]></system-err>
-</testsuite>
