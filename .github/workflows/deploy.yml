@@ -29,11 +29,20 @@ jobs:
 
             cd /opt/callbreak-server
 
+            export JAVA_HOME=/usr/lib/jvm/java-21-openjdk-arm64
+            export PATH="$JAVA_HOME/bin:$PATH"
+
+            echo "Preserving local build artifacts..."
+            if ! git diff --quiet || ! git diff --cached --quiet || [ -n "$(git ls-files --others --exclude-standard)" ]; then
+              git stash push --include-untracked --message "pre-deploy-${{ github.sha }}"
+            fi
+
             echo "Pulling latest code..."
-            git pull origin main
+            git pull --ff-only origin main
 
             echo "Building CallBreak..."
-            ./gradlew :server:installDist
+            java -version
+            ./gradlew clean :server:installDist
 
             echo "Restarting CallBreak..."
             sudo systemctl restart callbreak
