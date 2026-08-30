@@ -69,6 +69,9 @@ sealed interface ClientMessage {
 
     @Serializable
     data class Chat(val text: String) : ClientMessage
+
+    @Serializable
+    data class Throw(val item: String, val targetSeat: Seat) : ClientMessage
 }
 
 /**
@@ -121,6 +124,9 @@ sealed interface ServerMessage {
 
     @Serializable
     data class Chat(val fromSeat: Seat, val text: String) : ServerMessage
+
+    @Serializable
+    data class Throw(val fromSeat: Seat, val targetSeat: Seat, val item: String) : ServerMessage
 
     /** A request was rejected or something went wrong. */
     @Serializable

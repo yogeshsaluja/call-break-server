@@ -94,8 +94,10 @@ class Room(
             is ClientMessage.PlayCard -> applyPlayerIntent(playerId) { seat -> Intent.PlayCard(seat, msg.card) }
             is ClientMessage.AdvanceRound -> applyPlayerIntent(playerId) { Intent.AdvanceRound }
             is ClientMessage.Chat -> participants[playerId]?.seat?.let {
-                // Sender shows their own bubble locally, so broadcast only to the others.
-                broadcast(ServerMessage.Chat(it, msg.text), except = playerId)
+                broadcast(ServerMessage.Chat(it, msg.text))
+            }
+            is ClientMessage.Throw -> participants[playerId]?.seat?.let {
+                broadcast(ServerMessage.Throw(it, msg.targetSeat, msg.item))
             }
             is ClientMessage.CreateRoom, is ClientMessage.JoinByCode, is ClientMessage.QuickMatch -> Unit
         }
@@ -229,8 +231,9 @@ class Room(
 
     private suspend fun broadcast(message: ServerMessage, except: String? = null) {
         for (p in participants.values) {
-            if (p.id == except) continue
-            p.connection?.send(message)
+            if (p.id == except || !p.connected) continue
+            runCatching { p.connection?.send(message) }
+                .onFailure { p.connected = false }
         }
     }
 
