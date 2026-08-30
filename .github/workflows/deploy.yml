@@ -1,0 +1,52 @@
+name: Deploy CallBreak
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    name: Deploy to Oracle Cloud
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Deploy to Oracle
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_KEY }}
+          port: 22
+          script_stop: true
+
+          script: |
+            set -e
+
+            echo "================================"
+            echo "Deploying CallBreak"
+            echo "================================"
+
+            cd /opt/callbreak-server
+
+            echo "Pulling latest code..."
+            git pull origin main
+
+            echo "Building CallBreak..."
+            ./gradlew :server:installDist
+
+            echo "Restarting CallBreak..."
+            sudo systemctl restart callbreak
+
+            echo "Waiting for application..."
+            sleep 5
+
+            echo "Checking service..."
+            sudo systemctl is-active --quiet callbreak
+
+            echo "Checking application..."
+            curl --fail http://127.0.0.1:8081/
+
+            echo "================================"
+            echo "Deployment Successful!"
+            echo "================================"
