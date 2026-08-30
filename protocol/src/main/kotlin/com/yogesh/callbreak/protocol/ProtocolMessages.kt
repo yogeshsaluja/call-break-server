@@ -67,6 +67,10 @@ sealed interface ClientMessage {
     @Serializable
     data object AdvanceRound : ClientMessage
 
+    /** Let the authoritative server drive this player's bids and cards. */
+    @Serializable
+    data class SetAutoPlay(val enabled: Boolean) : ClientMessage
+
     @Serializable
     data class Chat(val text: String) : ClientMessage
 

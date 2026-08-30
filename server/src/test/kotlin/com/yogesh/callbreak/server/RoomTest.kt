@@ -144,4 +144,21 @@ class RoomTest {
         val state = survivor.latestState() ?: error("survivor did not receive bot takeover state")
         assertEquals(Seat.SOUTH, state.currentTurn, "bots must play through to the surviving human")
     }
+
+    @Test
+    fun autoPlay_bidsForHumanAndAdvancesToNextManualPlayer() = runTest {
+        val room = Room("TEST", pace = 0L, trickHoldMs = 0L, sweepMs = 0L)
+        val host = RecordingConnection("h1")
+        val autoPlayer = RecordingConnection("h2")
+        room.join("h1", "Host", host)
+        room.join("h2", "Auto", autoPlayer)
+        room.handle("h1", ClientMessage.StartGame)
+
+        assertEquals(Seat.WEST, host.latestState()?.currentTurn)
+        room.handle("h2", ClientMessage.SetAutoPlay(true))
+
+        val state = host.latestState() ?: error("auto-play state was not broadcast")
+        assertNotNull(state.player(Seat.WEST).call, "server must dismiss the auto player's bidding turn")
+        assertEquals(Seat.SOUTH, state.currentTurn, "server should continue through bots to the next manual player")
+    }
 }

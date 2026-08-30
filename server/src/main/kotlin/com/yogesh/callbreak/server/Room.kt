@@ -29,6 +29,7 @@ class Participant(
     val isBot: Boolean = false,
     var connected: Boolean = true,
     var avatar: String = "",
+    var autoPlay: Boolean = false,
 ) {
     fun toInfo() = PlayerInfo(id = id, name = name, seat = seat, isBot = isBot, connected = connected, avatar = avatar)
 }
@@ -93,6 +94,7 @@ class Room(
             is ClientMessage.MakeCall -> applyPlayerIntent(playerId) { seat -> Intent.MakeCall(seat, msg.count) }
             is ClientMessage.PlayCard -> applyPlayerIntent(playerId) { seat -> Intent.PlayCard(seat, msg.card) }
             is ClientMessage.AdvanceRound -> applyPlayerIntent(playerId) { Intent.AdvanceRound }
+            is ClientMessage.SetAutoPlay -> setAutoPlay(playerId, msg.enabled)
             is ClientMessage.Chat -> participants[playerId]?.seat?.let {
                 broadcast(ServerMessage.Chat(it, msg.text))
             }
@@ -166,6 +168,13 @@ class Room(
         driveBots()
     }
 
+    private suspend fun setAutoPlay(playerId: String, enabled: Boolean) {
+        val participant = participants[playerId] ?: return
+        if (participant.isBot || !participant.connected || game == null) return
+        participant.autoPlay = enabled
+        if (enabled) driveBots()
+    }
+
     private suspend fun driveBots() {
         while (true) {
             val g = game ?: return
@@ -220,7 +229,7 @@ class Room(
     // ---- Helpers ----------------------------------------------------------------
 
     private fun seatIsHuman(seat: Seat): Boolean =
-        participants.values.any { it.seat == seat && !it.isBot && it.connected }
+        participants.values.any { it.seat == seat && !it.isBot && it.connected && !it.autoPlay }
 
     private fun snapshot() = RoomSnapshot(
         code = code,
