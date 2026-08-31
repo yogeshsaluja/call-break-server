@@ -52,7 +52,7 @@ class RoomRegistry {
     /** Drop a player from a room and remove the room if no humans remain. */
     suspend fun onDisconnect(room: Room, playerId: String) {
         room.onDisconnect(playerId)
-        if (room.isAbandoned()) rooms.remove(room.code)
+        if (room.isAbandoned() && rooms.remove(room.code, room)) room.close()
     }
 
     private suspend fun newRoom(): Room = createMutex.withLock {

@@ -7,6 +7,9 @@ import com.yogesh.callbreak.engine.Phase
 import com.yogesh.callbreak.engine.Seat
 import com.yogesh.callbreak.protocol.ClientMessage
 import com.yogesh.callbreak.protocol.ServerMessage
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.test.advanceTimeBy
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -40,6 +43,7 @@ private class ClosableConnection(override val playerId: String) : Connection {
     }
 }
 
+@OptIn(ExperimentalCoroutinesApi::class)
 class RoomTest {
 
     @Test
@@ -160,5 +164,40 @@ class RoomTest {
         val state = host.latestState() ?: error("auto-play state was not broadcast")
         assertNotNull(state.player(Seat.WEST).call, "server must dismiss the auto player's bidding turn")
         assertEquals(Seat.SOUTH, state.currentTurn, "server should continue through bots to the next manual player")
+    }
+
+    @Test
+    fun anyPlayerCanAdvanceRound_forEveryClient() = runTest {
+        val room = Room("TEST", pace = 0L, trickHoldMs = 0L, sweepMs = 0L, scope = this)
+        val host = RecordingConnection("h1")
+        val guest = RecordingConnection("h2")
+        room.join("h1", "Host", host)
+        room.join("h2", "Guest", guest)
+        room.handle("h1", ClientMessage.StartGame)
+        room.handle("h1", ClientMessage.SetAutoPlay(true))
+        room.handle("h2", ClientMessage.SetAutoPlay(true))
+        assertEquals(Phase.ROUND_OVER, host.latestState()?.phase)
+
+        room.handle("h1", ClientMessage.SetAutoPlay(false))
+        room.handle("h2", ClientMessage.SetAutoPlay(false))
+        room.handle("h2", ClientMessage.AdvanceRound)
+
+        assertEquals(2, host.latestState()?.round)
+        assertEquals(host.latestState(), guest.latestState(), "one click must update the whole table")
+    }
+
+    @Test
+    fun roundAdvancesAutomaticallyAfterFiveSeconds() = runTest {
+        val room = Room("TEST", pace = 0L, trickHoldMs = 0L, sweepMs = 0L, scope = this)
+        val host = RecordingConnection("h1")
+        room.join("h1", "Host", host)
+        room.handle("h1", ClientMessage.StartGame)
+        room.handle("h1", ClientMessage.SetAutoPlay(true))
+        assertEquals(Phase.ROUND_OVER, host.latestState()?.phase)
+
+        advanceTimeBy(5_000L)
+        runCurrent()
+
+        assertEquals(2, host.latestState()?.round)
     }
 }

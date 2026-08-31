@@ -15,7 +15,12 @@ import com.yogesh.callbreak.protocol.ClientMessage
 import com.yogesh.callbreak.protocol.PlayerInfo
 import com.yogesh.callbreak.protocol.RoomSnapshot
 import com.yogesh.callbreak.protocol.ServerMessage
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlin.random.Random
@@ -50,10 +55,13 @@ class Room(
     private val pace: Long = 700L,
     private val trickHoldMs: Long = 650L,
     private val sweepMs: Long = 450L,
+    private val roundAdvanceDelayMs: Long = 5_000L,
+    private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
 ) {
     private val mutex = Mutex()
     private val participants = LinkedHashMap<String, Participant>()
     private val roundHistory = mutableListOf<Play>()
+    private var roundAdvanceJob: Job? = null
 
     var hostId: String? = null
         private set
@@ -85,6 +93,12 @@ class Room(
         participants.values.none { !it.isBot && it.connected }
     }
 
+    /** Stop delayed room work after the registry removes an abandoned table. */
+    fun close() {
+        roundAdvanceJob?.cancel()
+        roundAdvanceJob = null
+    }
+
     // ---- Message handling -------------------------------------------------------
 
     suspend fun handle(playerId: String, msg: ClientMessage) = mutex.withLock {
@@ -93,7 +107,7 @@ class Room(
             is ClientMessage.LeaveRoom -> removeLocked(playerId)
             is ClientMessage.MakeCall -> applyPlayerIntent(playerId) { seat -> Intent.MakeCall(seat, msg.count) }
             is ClientMessage.PlayCard -> applyPlayerIntent(playerId) { seat -> Intent.PlayCard(seat, msg.card) }
-            is ClientMessage.AdvanceRound -> applyPlayerIntent(playerId) { Intent.AdvanceRound }
+            is ClientMessage.AdvanceRound -> advanceRound(playerId)
             is ClientMessage.SetAutoPlay -> setAutoPlay(playerId, msg.enabled)
             is ClientMessage.Chat -> participants[playerId]?.seat?.let {
                 broadcast(ServerMessage.Chat(it, msg.text))
@@ -168,6 +182,16 @@ class Room(
         driveBots()
     }
 
+    /** Any connected player can continue the whole table before the fallback timer fires. */
+    private suspend fun advanceRound(playerId: String) {
+        val participant = participants[playerId] ?: return
+        if (!participant.connected || game?.phase != Phase.ROUND_OVER) return
+        roundAdvanceJob?.cancel()
+        roundAdvanceJob = null
+        applyStep(Intent.AdvanceRound)
+        driveBots()
+    }
+
     private suspend fun setAutoPlay(playerId: String, enabled: Boolean) {
         val participant = participants[playerId] ?: return
         if (participant.isBot || !participant.connected || game == null) return
@@ -224,6 +248,20 @@ class Room(
 
         game = next
         broadcast(ServerMessage.StateUpdate(next))
+        if (next.phase == Phase.ROUND_OVER) scheduleRoundAdvance()
+    }
+
+    private fun scheduleRoundAdvance() {
+        roundAdvanceJob?.cancel()
+        roundAdvanceJob = scope.launch {
+            delay(roundAdvanceDelayMs)
+            mutex.withLock {
+                if (game?.phase != Phase.ROUND_OVER) return@withLock
+                roundAdvanceJob = null
+                applyStep(Intent.AdvanceRound)
+                driveBots()
+            }
+        }
     }
 
     // ---- Helpers ----------------------------------------------------------------
