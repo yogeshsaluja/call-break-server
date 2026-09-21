@@ -120,6 +120,10 @@ sealed interface ServerMessage {
     @Serializable
     data object LeftRoom : ServerMessage
 
+    /** Authenticated server-owned coin balance after a join, entry fee, purchase, or reward. */
+    @Serializable
+    data class WalletBalance(val balance: Int) : ServerMessage
+
     /** Roster changed (someone joined/left/renamed) while still in the waiting lobby. */
     @Serializable
     data class RoomUpdated(val snapshot: RoomSnapshot) : ServerMessage

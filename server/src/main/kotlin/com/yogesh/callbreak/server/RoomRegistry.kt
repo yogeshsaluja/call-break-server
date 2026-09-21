@@ -4,32 +4,45 @@ import com.yogesh.callbreak.protocol.ServerMessage
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.util.concurrent.ConcurrentHashMap
-import kotlin.random.Random
+import java.security.SecureRandom
 
 /**
  * In-memory registry of active [Room]s, keyed by share code. Handles the three lobby
  * entry points (create / join-by-code / quick-match) and prunes rooms once every human
  * has left.
  */
-class RoomRegistry {
+class RoomRegistry(private val coinWallets: CoinWalletStore = CoinWalletStore()) {
     private val rooms = ConcurrentHashMap<String, Room>()
     private val createMutex = Mutex()
 
     /** Create a fresh private room; the caller becomes host. */
-    suspend fun createRoom(playerId: String, name: String, connection: Connection, avatar: String = ""): Room {
+    suspend fun createRoom(
+        playerId: String,
+        name: String,
+        connection: Connection,
+        avatar: String = "",
+        walletId: String? = null,
+    ): Room {
         val room = newRoom()
-        room.join(playerId, name, connection, avatar)
+        room.join(playerId, name, connection, avatar, walletId)
         return room
     }
 
     /** Join an existing room by code. Returns null (and notifies the client) on failure. */
-    suspend fun joinByCode(code: String, playerId: String, name: String, connection: Connection, avatar: String = ""): Room? {
+    suspend fun joinByCode(
+        code: String,
+        playerId: String,
+        name: String,
+        connection: Connection,
+        avatar: String = "",
+        walletId: String? = null,
+    ): Room? {
         val room = rooms[code.uppercase()]
         if (room == null) {
             connection.send(ServerMessage.ErrorMsg("Room \"$code\" not found"))
             return null
         }
-        val seat = room.join(playerId, name, connection, avatar)
+        val seat = room.join(playerId, name, connection, avatar, walletId)
         if (seat == null) {
             connection.send(ServerMessage.ErrorMsg("Room is full or already started"))
             return null
@@ -38,14 +51,20 @@ class RoomRegistry {
     }
 
     /** Auto-pair into the first room with a free human seat, else create a new one. */
-    suspend fun quickMatch(playerId: String, name: String, connection: Connection, avatar: String = ""): Room {
+    suspend fun quickMatch(
+        playerId: String,
+        name: String,
+        connection: Connection,
+        avatar: String = "",
+        walletId: String? = null,
+    ): Room {
         for (candidate in rooms.values) {
-            if (candidate.hasFreeHumanSeat() && candidate.join(playerId, name, connection, avatar) != null) {
+            if (candidate.hasFreeHumanSeat() && candidate.join(playerId, name, connection, avatar, walletId) != null) {
                 return candidate
             }
         }
         val room = newRoom()
-        room.join(playerId, name, connection, avatar)
+        room.join(playerId, name, connection, avatar, walletId)
         return room
     }
 
@@ -79,11 +98,11 @@ class RoomRegistry {
         do {
             code = randomCode()
         } while (rooms.containsKey(code))
-        Room(code, onReservationExpired = ::removeIfAbandoned).also { rooms[code] = it }
+        Room(code, onReservationExpired = ::removeIfAbandoned, coinWallets = coinWallets).also { rooms[code] = it }
     }
 
     private fun randomCode(): String = (1..CODE_LENGTH)
-        .map { CODE_ALPHABET[Random.nextInt(CODE_ALPHABET.length)] }
+        .map { CODE_ALPHABET[SECURE_RANDOM.nextInt(CODE_ALPHABET.length)] }
         .joinToString("")
 
     private companion object {
@@ -91,5 +110,6 @@ class RoomRegistry {
 
         // No 0/O/1/I to keep shared codes unambiguous.
         const val CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+        val SECURE_RANDOM = SecureRandom()
     }
 }

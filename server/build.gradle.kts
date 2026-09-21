@@ -21,6 +21,7 @@ dependencies {
     implementation(project(":protocol"))
 
     implementation(libs.bundles.ktor.server)
+    implementation(libs.firebase.admin)
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.kotlinx.coroutines.core)
     runtimeOnly(libs.logback.classic)

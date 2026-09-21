@@ -66,6 +66,20 @@ class RoomTest {
     }
 
     @Test
+    fun authenticatedGameChargesEntryExactlyOnce() = runTest {
+        val wallets = CoinWalletStore()
+        val room = Room("TEST", coinWallets = wallets)
+        val host = RecordingConnection("h1")
+
+        room.join("h1", "Host", host, walletId = "wallet-1")
+        room.handle("h1", ClientMessage.StartGame)
+        room.handle("h1", ClientMessage.StartGame)
+
+        assertEquals(370, wallets.balance("wallet-1"))
+        assertEquals(370, host.last<ServerMessage.WalletBalance>()?.balance)
+    }
+
+    @Test
     fun chatAndThrows_areBroadcastToEveryPlayer_includingSender() = runTest {
         val room = Room("TEST")
         val host = RecordingConnection("h1")

@@ -6,10 +6,16 @@ import com.yogesh.callbreak.protocol.ServerMessage
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.Application
 import io.ktor.server.application.install
+import io.ktor.server.auth.Authentication
+import io.ktor.server.auth.authenticate
+import io.ktor.server.auth.bearer
+import io.ktor.server.auth.principal
 import io.ktor.server.cio.CIO
 import io.ktor.server.engine.embeddedServer
 import io.ktor.server.plugins.calllogging.CallLogging
 import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
+import io.ktor.server.plugins.forwardedheaders.XForwardedHeaders
+import io.ktor.server.plugins.origin
 import io.ktor.server.plugins.statuspages.StatusPages
 import io.ktor.server.request.receive
 import io.ktor.server.response.respond
@@ -20,20 +26,28 @@ import io.ktor.server.routing.routing
 import io.ktor.server.websocket.WebSockets
 import io.ktor.server.websocket.webSocket
 import io.ktor.websocket.Frame
+import io.ktor.websocket.CloseReason
+import io.ktor.websocket.close
 import io.ktor.websocket.readText
 import io.ktor.serialization.kotlinx.json.json
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.Json
 import java.util.UUID
 
 const val DEFAULT_PORT = 8080
 
 fun main() {
-    // 0.0.0.0 so the Android emulator can reach it via 10.0.2.2.
     val port = System.getenv("PORT")?.toIntOrNull() ?: DEFAULT_PORT
-    embeddedServer(CIO, port = port, host = "0.0.0.0") { module() }.start(wait = true)
+    val host = System.getenv("HOST")?.takeIf(String::isNotBlank) ?: "127.0.0.1"
+    embeddedServer(CIO, port = port, host = host) { module() }.start(wait = true)
 }
 
-fun Application.module(paymentService: PaymentService? = PaymentService.fromEnvironment()) {
+fun Application.module(
+    paymentService: PaymentService? = PaymentService.fromEnvironment(),
+    identitySecurity: IdentitySecurity = IdentitySecurity.fromEnvironment(),
+    coinWallets: CoinWalletStore = CoinWalletStore.fromEnvironment(),
+) {
+    val applicationLog = environment.log
     // pingPeriod/timeout let the server detect a client that force-quit (its TCP socket
     // never closes cleanly). Without this the read loop blocks forever and the player's
     // disconnect is never handled — freezing the game for everyone else. On timeout the
@@ -41,8 +55,15 @@ fun Application.module(paymentService: PaymentService? = PaymentService.fromEnvi
     install(WebSockets) {
         pingPeriodMillis = 15_000
         timeoutMillis = 15_000
+        maxFrameSize = SecurityPolicy.MAX_FRAME_BYTES
     }
     install(CallLogging)
+    install(XForwardedHeaders)
+    install(Authentication) {
+        bearer("firebase") {
+            authenticate { credentials -> identitySecurity.verifier?.verify(credentials.token) }
+        }
+    }
     install(ContentNegotiation) {
         json(Json { ignoreUnknownKeys = true })
     }
@@ -51,56 +72,136 @@ fun Application.module(paymentService: PaymentService? = PaymentService.fromEnvi
             call.respond(cause.status, PaymentErrorResponse(cause.message ?: "Payment request failed"))
         }
         exception<Throwable> { call, cause ->
-            call.respondText("Server error: ${cause.message}", status = HttpStatusCode.InternalServerError)
+            applicationLog.error("Unhandled request failure", cause)
+            call.respondText("Internal server error", status = HttpStatusCode.InternalServerError)
         }
     }
 
-    val registry = RoomRegistry()
+    val registry = RoomRegistry(coinWallets)
+    val connections = ConnectionLimiter()
 
     routing {
         get("/") { call.respondText("Call Break server is up") }
 
-        post("/api/v1/payments/razorpay/orders") {
-            val service = paymentService ?: throw PaymentRequestException(
-                HttpStatusCode.ServiceUnavailable,
-                "Razorpay Test Mode is not configured",
-            )
-            call.respond(HttpStatusCode.Created, service.createOrder(call.receive()))
-        }
+        authenticate("firebase", optional = !identitySecurity.required) {
+            post("/api/v1/payments/razorpay/orders") {
+                val service = paymentService ?: throw PaymentRequestException(
+                    HttpStatusCode.ServiceUnavailable,
+                    "Razorpay Test Mode is not configured",
+                )
+                val request = call.receive<CreateCoinOrderRequest>()
+                val walletId = call.principal<AuthenticatedUser>()
+                    ?.let { CoinWalletStore.walletIdForUser(it.uid) }
+                    ?: request.walletId
+                call.respond(HttpStatusCode.Created, service.createOrder(request.copy(walletId = walletId)))
+            }
 
-        post("/api/v1/payments/razorpay/verify") {
-            val service = paymentService ?: throw PaymentRequestException(
-                HttpStatusCode.ServiceUnavailable,
-                "Razorpay Test Mode is not configured",
-            )
-            call.respond(service.verify(call.receive()))
-        }
+            post("/api/v1/payments/razorpay/verify") {
+                val service = paymentService ?: throw PaymentRequestException(
+                    HttpStatusCode.ServiceUnavailable,
+                    "Razorpay Test Mode is not configured",
+                )
+                val request = call.receive<VerifyCoinPaymentRequest>()
+                val walletId = call.principal<AuthenticatedUser>()
+                    ?.let { CoinWalletStore.walletIdForUser(it.uid) }
+                    ?: request.walletId
+                val verified = service.verify(request.copy(walletId = walletId))
+                val balance = call.principal<AuthenticatedUser>()?.let {
+                    coinWallets.creditOnce(walletId, "payment:${verified.paymentId}", verified.coins)
+                }
+                call.respond(verified.copy(balance = balance))
+            }
 
-        webSocket("/ws") {
-            var playerId = UUID.randomUUID().toString().take(8)
-            val connection = SocketConnection(playerId, this)
-            var room: Room? = null
-            try {
-                for (frame in incoming) {
-                    if (frame !is Frame.Text) continue
-                    val msg = ProtocolJson.decodeFromString<ClientMessage>(frame.readText())
-                    val current = room
-                    if (current == null) {
-                        room = when (msg) {
-                            is ClientMessage.CreateRoom -> registry.createRoom(playerId, msg.name, connection, msg.avatar)
-                            is ClientMessage.JoinByCode -> registry.joinByCode(msg.code, playerId, msg.name, connection, msg.avatar)
-                            is ClientMessage.QuickMatch -> registry.quickMatch(playerId, msg.name, connection, msg.avatar)
-                            is ClientMessage.Reconnect -> {
-                                registry.reconnect(msg.roomCode, msg.playerId, msg.reconnectToken, connection)
-                                    ?.also { playerId = msg.playerId }
-                            }
-                            else -> {
-                                connection.send(ServerMessage.ErrorMsg("Join or create a room first"))
-                                null
-                            }
+            get("/api/v1/wallet") {
+                val user = call.principal<AuthenticatedUser>()
+                if (user == null) {
+                    call.respond(HttpStatusCode.Unauthorized, PaymentErrorResponse("Authentication required"))
+                    return@get
+                }
+                call.respond(WalletBalanceResponse(coinWallets.balance(CoinWalletStore.walletIdForUser(user.uid))))
+            }
+
+            webSocket("/ws") {
+                val remoteAddress = call.request.origin.remoteHost
+                if (!connections.tryAcquire(remoteAddress)) {
+                    close(CloseReason(CloseReason.Codes.VIOLATED_POLICY, "Connection limit exceeded"))
+                    return@webSocket
+                }
+                var playerId = UUID.randomUUID().toString().take(8)
+                val authenticatedUser = call.principal<AuthenticatedUser>()
+                val walletId = authenticatedUser?.let { CoinWalletStore.walletIdForUser(it.uid) }
+                val connection = SocketConnection(playerId, this)
+                var room: Room? = null
+                val messageRate = MessageRateLimiter()
+                try {
+                    while (true) {
+                        val frame =
+                            if (room == null) {
+                                withTimeoutOrNull(SecurityPolicy.JOIN_TIMEOUT) {
+                                    incoming.receiveCatching().getOrNull()
+                                }
+                            } else {
+                                incoming.receiveCatching().getOrNull()
+                            } ?: break
+                        if (frame !is Frame.Text) continue
+                        if (!messageRate.tryAcquire()) {
+                            connection.send(ServerMessage.ErrorMsg("Too many requests"))
+                            continue
                         }
-                    } else {
-                        if (msg is ClientMessage.LeaveRoom) {
+                        val text = frame.readText()
+                        if (text.length > SecurityPolicy.MAX_MESSAGE_CHARS) {
+                            close(CloseReason(CloseReason.Codes.TOO_BIG, "Message too large"))
+                            break
+                        }
+                        val msg =
+                            runCatching { ProtocolJson.decodeFromString<ClientMessage>(text) }
+                                .getOrElse {
+                                    connection.send(ServerMessage.ErrorMsg("Invalid message"))
+                                    continue
+                                }
+                        if (!SecurityPolicy.isValid(msg)) {
+                            connection.send(ServerMessage.ErrorMsg("Invalid message"))
+                            continue
+                        }
+                        val current = room
+                        if (current == null) {
+                            room =
+                                when (msg) {
+                                    is ClientMessage.CreateRoom ->
+                                        registry.createRoom(
+                                            playerId,
+                                            authenticatedUser?.name ?: msg.name,
+                                            connection,
+                                            msg.avatar,
+                                            walletId,
+                                        )
+                                    is ClientMessage.JoinByCode ->
+                                        registry.joinByCode(
+                                            msg.code,
+                                            playerId,
+                                            authenticatedUser?.name ?: msg.name,
+                                            connection,
+                                            msg.avatar,
+                                            walletId,
+                                        )
+                                    is ClientMessage.QuickMatch ->
+                                        registry.quickMatch(
+                                            playerId,
+                                            authenticatedUser?.name ?: msg.name,
+                                            connection,
+                                            msg.avatar,
+                                            walletId,
+                                        )
+                                    is ClientMessage.Reconnect -> {
+                                        registry.reconnect(msg.roomCode, msg.playerId, msg.reconnectToken, connection)
+                                            ?.also { playerId = msg.playerId }
+                                    }
+                                    else -> {
+                                        connection.send(ServerMessage.ErrorMsg("Join or create a room first"))
+                                        null
+                                    }
+                                }
+                        } else if (msg is ClientMessage.LeaveRoom) {
                             registry.leave(current, playerId, connection)
                             connection.send(ServerMessage.LeftRoom)
                             room = null
@@ -109,9 +210,10 @@ fun Application.module(paymentService: PaymentService? = PaymentService.fromEnvi
                             current.handle(playerId, msg)
                         }
                     }
+                } finally {
+                    room?.let { registry.onDisconnect(it, playerId, connection) }
+                    connections.release(remoteAddress)
                 }
-            } finally {
-                room?.let { registry.onDisconnect(it, playerId, connection) }
             }
         }
     }

@@ -50,6 +50,7 @@ data class VerifiedCoinPaymentResponse(
     val productId: String,
     val paymentId: String,
     val coins: Int,
+    val balance: Int? = null,
 )
 
 @Serializable

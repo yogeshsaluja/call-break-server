@@ -40,6 +40,7 @@ class Participant(
     var autoPlay: Boolean = false,
     var reconnectTokenHash: ByteArray? = null,
     var reconnectExpiryJob: Job? = null,
+    val walletId: String? = null,
 ) {
     fun toInfo() = PlayerInfo(id = id, name = name, seat = seat, isBot = isBot, connected = connected, avatar = avatar)
 }
@@ -63,6 +64,7 @@ class Room(
     private val roundAdvanceDelayMs: Long = 5_000L,
     private val reconnectGraceMs: Long = 60_000L,
     private val onReservationExpired: suspend (Room) -> Unit = {},
+    private val coinWallets: CoinWalletStore = CoinWalletStore(),
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
 ) {
     private val mutex = Mutex()
@@ -80,7 +82,13 @@ class Room(
     // ---- Lobby ------------------------------------------------------------------
 
     /** Seat the joining human (host = first). Returns their seat, or null if full/started. */
-    suspend fun join(playerId: String, name: String, connection: Connection, avatar: String = ""): Seat? = mutex.withLock {
+    suspend fun join(
+        playerId: String,
+        name: String,
+        connection: Connection,
+        avatar: String = "",
+        walletId: String? = null,
+    ): Seat? = mutex.withLock {
         if (game != null) return@withLock null
         val free = Seat.entries.firstOrNull { seat -> participants.values.none { it.seat == seat } }
             ?: return@withLock null
@@ -94,8 +102,10 @@ class Room(
             isBot = false,
             avatar = avatar,
             reconnectTokenHash = hashToken(reconnectToken),
+            walletId = walletId,
         )
         connection.send(ServerMessage.RoomJoined(code, playerId, free, snapshot(), reconnectToken))
+        walletId?.let { connection.send(ServerMessage.WalletBalance(coinWallets.balance(it))) }
         broadcast(ServerMessage.RoomUpdated(snapshot()), except = playerId)
         free
     }
@@ -244,6 +254,20 @@ class Room(
 
     private suspend fun startGame() {
         if (game != null) return
+        val humans = participants.values.filter { !it.isBot && it.walletId != null }
+        val canStart = humans.all { participant ->
+            coinWallets.debitOnce(
+                requireNotNull(participant.walletId),
+                "game:$code:entry:${participant.id}",
+                ENTRY_FEE,
+            )
+        }
+        if (!canStart) {
+            humans.forEach { participant ->
+                participant.connection?.send(ServerMessage.ErrorMsg("A player does not have enough coins"))
+            }
+            return
+        }
         val taken = participants.values.mapNotNull { it.seat }.toSet()
         var botIndex = 0
         for (seat in Seat.entries) {
@@ -267,6 +291,7 @@ class Room(
         for (p in participants.values) {
             val seat = p.seat ?: continue
             p.connection?.send(ServerMessage.GameStarted(fresh, seat, roster))
+            p.walletId?.let { p.connection?.send(ServerMessage.WalletBalance(coinWallets.balance(it))) }
         }
         driveBots()
     }
@@ -392,7 +417,16 @@ class Room(
 
         game = next
         broadcast(ServerMessage.StateUpdate(next))
+        if (pre.phase != Phase.GAME_OVER && next.phase == Phase.GAME_OVER) awardWinner(next)
         if (next.phase == Phase.ROUND_OVER) scheduleRoundAdvance()
+    }
+
+    private suspend fun awardWinner(state: GameState) {
+        val winningSeat = state.players.maxByOrNull { it.value.totalScore }?.key ?: return
+        val winner = participants.values.firstOrNull { it.seat == winningSeat } ?: return
+        val walletId = winner.walletId ?: return
+        val balance = coinWallets.creditOnce(walletId, "game:$code:winner", WIN_POT)
+        winner.connection?.send(ServerMessage.WalletBalance(balance))
     }
 
     private fun scheduleRoundAdvance() {
@@ -444,5 +478,8 @@ class Room(
 
         fun hashToken(token: String): ByteArray = MessageDigest.getInstance("SHA-256")
             .digest(token.encodeToByteArray())
+
+        const val ENTRY_FEE = 30
+        const val WIN_POT = 120
     }
 }
