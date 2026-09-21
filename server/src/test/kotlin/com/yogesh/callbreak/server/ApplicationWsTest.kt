@@ -102,4 +102,24 @@ class ApplicationWsTest {
 
         lonely.close()
     }
+
+    @Test
+    fun reconnect_replacesSocketAndReturnsAuthoritativeSeat() = testApplication {
+        application { module() }
+        val client = createClient { install(WebSockets) }
+
+        val original = client.webSocketSession(path = "/ws")
+        original.send(ClientMessage.CreateRoom("Host"))
+        val joined = original.await<ServerMessage.RoomJoined>()
+
+        val replacement = client.webSocketSession(path = "/ws")
+        replacement.send(ClientMessage.Reconnect(joined.code, joined.youId, joined.reconnectToken))
+        val restored = replacement.await<ServerMessage.Reconnected>()
+        assertEquals(joined.youId, restored.youId)
+        assertEquals(joined.yourSeat, restored.yourSeat)
+
+        replacement.send(ClientMessage.LeaveRoom)
+        replacement.await<ServerMessage.LeftRoom>()
+        replacement.close()
+    }
 }

@@ -3,7 +3,9 @@ package com.yogesh.callbreak.server
 import com.yogesh.callbreak.protocol.ProtocolJson
 import com.yogesh.callbreak.protocol.ServerMessage
 import io.ktor.websocket.Frame
+import io.ktor.websocket.CloseReason
 import io.ktor.websocket.WebSocketSession
+import io.ktor.websocket.close
 import io.ktor.websocket.send
 
 /**
@@ -13,6 +15,7 @@ import io.ktor.websocket.send
 interface Connection {
     val playerId: String
     suspend fun send(message: ServerMessage)
+    suspend fun close() {}
 }
 
 /**
@@ -25,5 +28,9 @@ class SocketConnection(
 ) : Connection {
     override suspend fun send(message: ServerMessage) {
         session.send(Frame.Text(ProtocolJson.encodeToString(ServerMessage.serializer(), message)))
+    }
+
+    override suspend fun close() {
+        session.close(CloseReason(CloseReason.Codes.NORMAL, "Connection replaced"))
     }
 }

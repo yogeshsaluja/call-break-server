@@ -50,6 +50,14 @@ sealed interface ClientMessage {
     @Serializable
     data class QuickMatch(val name: String, val avatar: String = "") : ClientMessage
 
+    /** Reclaim a previously joined seat after the socket was interrupted. */
+    @Serializable
+    data class Reconnect(
+        val roomCode: String,
+        val playerId: String,
+        val reconnectToken: String,
+    ) : ClientMessage
+
     /** Host-only: begin the game, filling empty seats with bots. */
     @Serializable
     data object StartGame : ClientMessage
@@ -91,7 +99,26 @@ sealed interface ServerMessage {
         val youId: String,
         val yourSeat: Seat,
         val snapshot: RoomSnapshot,
+        val reconnectToken: String = "",
     ) : ServerMessage
+
+    /** Authoritative room/game state returned after a seat is reclaimed. */
+    @Serializable
+    data class Reconnected(
+        val code: String,
+        val youId: String,
+        val yourSeat: Seat,
+        val snapshot: RoomSnapshot,
+        val state: GameState? = null,
+        val autoPlay: Boolean = false,
+    ) : ServerMessage
+
+    @Serializable
+    data class ReconnectRejected(val reason: String) : ServerMessage
+
+    /** Confirms that an explicit leave invalidated the reconnect reservation. */
+    @Serializable
+    data object LeftRoom : ServerMessage
 
     /** Roster changed (someone joined/left/renamed) while still in the waiting lobby. */
     @Serializable

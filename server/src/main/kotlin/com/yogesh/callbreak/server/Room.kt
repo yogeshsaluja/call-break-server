@@ -23,18 +23,23 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import java.security.MessageDigest
+import java.security.SecureRandom
+import java.util.Base64
 import kotlin.random.Random
 
-/** One participant. A [connection] of null marks a server-run bot. */
+/** One participant. A null [connection] marks a bot or a temporarily disconnected human. */
 class Participant(
     val id: String,
     var name: String,
-    val connection: Connection?,
+    var connection: Connection?,
     var seat: Seat? = null,
-    val isBot: Boolean = false,
+    var isBot: Boolean = false,
     var connected: Boolean = true,
     var avatar: String = "",
     var autoPlay: Boolean = false,
+    var reconnectTokenHash: ByteArray? = null,
+    var reconnectExpiryJob: Job? = null,
 ) {
     fun toInfo() = PlayerInfo(id = id, name = name, seat = seat, isBot = isBot, connected = connected, avatar = avatar)
 }
@@ -56,12 +61,15 @@ class Room(
     private val trickHoldMs: Long = 650L,
     private val sweepMs: Long = 450L,
     private val roundAdvanceDelayMs: Long = 5_000L,
+    private val reconnectGraceMs: Long = 60_000L,
+    private val onReservationExpired: suspend (Room) -> Unit = {},
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
 ) {
     private val mutex = Mutex()
     private val participants = LinkedHashMap<String, Participant>()
     private val roundHistory = mutableListOf<Play>()
     private var roundAdvanceJob: Job? = null
+    private var disconnectedBotJob: Job? = null
 
     var hostId: String? = null
         private set
@@ -77,8 +85,17 @@ class Room(
         val free = Seat.entries.firstOrNull { seat -> participants.values.none { it.seat == seat } }
             ?: return@withLock null
         if (hostId == null) hostId = playerId
-        participants[playerId] = Participant(playerId, name, connection, seat = free, isBot = false, avatar = avatar)
-        connection.send(ServerMessage.RoomJoined(code, playerId, free, snapshot()))
+        val reconnectToken = newReconnectToken()
+        participants[playerId] = Participant(
+            playerId,
+            name,
+            connection,
+            seat = free,
+            isBot = false,
+            avatar = avatar,
+            reconnectTokenHash = hashToken(reconnectToken),
+        )
+        connection.send(ServerMessage.RoomJoined(code, playerId, free, snapshot(), reconnectToken))
         broadcast(ServerMessage.RoomUpdated(snapshot()), except = playerId)
         free
     }
@@ -88,15 +105,18 @@ class Room(
         game == null && Seat.entries.any { seat -> participants.values.none { it.seat == seat } }
     }
 
-    /** True once no connected human remains — the registry prunes such rooms. */
+    /** True once no human seat or reconnect reservation remains. */
     suspend fun isAbandoned(): Boolean = mutex.withLock {
-        participants.values.none { !it.isBot && it.connected }
+        participants.values.none { !it.isBot }
     }
 
     /** Stop delayed room work after the registry removes an abandoned table. */
     fun close() {
         roundAdvanceJob?.cancel()
         roundAdvanceJob = null
+        disconnectedBotJob?.cancel()
+        disconnectedBotJob = null
+        participants.values.forEach { it.reconnectExpiryJob?.cancel() }
     }
 
     // ---- Message handling -------------------------------------------------------
@@ -104,7 +124,7 @@ class Room(
     suspend fun handle(playerId: String, msg: ClientMessage) = mutex.withLock {
         when (msg) {
             is ClientMessage.StartGame -> if (playerId == hostId && game == null) startGame()
-            is ClientMessage.LeaveRoom -> removeLocked(playerId)
+            is ClientMessage.LeaveRoom -> Unit
             is ClientMessage.MakeCall -> applyPlayerIntent(playerId) { seat -> Intent.MakeCall(seat, msg.count) }
             is ClientMessage.PlayCard -> applyPlayerIntent(playerId) { seat -> Intent.PlayCard(seat, msg.card) }
             is ClientMessage.AdvanceRound -> advanceRound(playerId)
@@ -115,21 +135,107 @@ class Room(
             is ClientMessage.Throw -> participants[playerId]?.seat?.let {
                 broadcast(ServerMessage.Throw(it, msg.targetSeat, msg.item))
             }
-            is ClientMessage.CreateRoom, is ClientMessage.JoinByCode, is ClientMessage.QuickMatch -> Unit
+            is ClientMessage.CreateRoom, is ClientMessage.JoinByCode,
+            is ClientMessage.QuickMatch, is ClientMessage.Reconnect -> Unit
         }
     }
 
-    /** Handle a socket dropping: pre-game removes the player; in-game hands the seat to a bot. */
-    suspend fun onDisconnect(playerId: String) = mutex.withLock { removeLocked(playerId) }
+    /** Reattach a socket to a reserved seat and return a complete authoritative snapshot. */
+    suspend fun reconnect(playerId: String, token: String, connection: Connection): Boolean = mutex.withLock {
+        val participant = participants[playerId]
+        val expectedHash = participant?.reconnectTokenHash
+        if (participant == null || participant.isBot || expectedHash == null ||
+            !MessageDigest.isEqual(expectedHash, hashToken(token))
+        ) {
+            connection.send(ServerMessage.ReconnectRejected("Seat reservation is invalid or expired"))
+            return@withLock false
+        }
+
+        val previous = participant.connection
+        participant.reconnectExpiryJob?.cancel()
+        participant.reconnectExpiryJob = null
+        participant.connection = connection
+        participant.connected = true
+        previous?.takeIf { it !== connection }?.let { old ->
+            scope.launch { runCatching { old.close() } }
+        }
+
+        val seat = requireNotNull(participant.seat)
+        connection.send(
+            ServerMessage.Reconnected(
+                code = code,
+                youId = participant.id,
+                yourSeat = seat,
+                snapshot = snapshot(),
+                state = game,
+                autoPlay = participant.autoPlay,
+            ),
+        )
+        broadcast(ServerMessage.RoomUpdated(snapshot()), except = playerId)
+        driveBots()
+        true
+    }
+
+    /** Ignore stale disconnects from a socket that has already been replaced. */
+    suspend fun onDisconnect(playerId: String, connection: Connection) = mutex.withLock {
+        val participant = participants[playerId] ?: return@withLock
+        if (participant.connection !== connection || !participant.connected) return@withLock
+        participant.connection = null
+        participant.connected = false
+        participant.reconnectExpiryJob?.cancel()
+        participant.reconnectExpiryJob = scope.launch {
+            delay(reconnectGraceMs)
+            expireReservation(playerId, participant)
+        }
+        broadcast(ServerMessage.RoomUpdated(snapshot()))
+        driveBots()
+    }
+
+    /** Explicit leave invalidates the reconnect credential immediately. */
+    suspend fun leave(playerId: String, connection: Connection): Boolean = mutex.withLock {
+        val participant = participants[playerId] ?: return@withLock false
+        if (participant.connection !== connection) return@withLock false
+        removeLocked(playerId)
+        true
+    }
+
+    private suspend fun expireReservation(playerId: String, expected: Participant) {
+        var abandoned = false
+        mutex.withLock {
+            val participant = participants[playerId]
+            if (participant !== expected || participant.connected) return@withLock
+            participant.reconnectExpiryJob = null
+            if (game == null) {
+                participants.remove(playerId)
+                if (playerId == hostId) hostId = participants.values.firstOrNull { !it.isBot }?.id
+            } else {
+                participant.isBot = true
+                participant.connected = true
+                participant.autoPlay = true
+                participant.reconnectTokenHash = null
+            }
+            broadcast(ServerMessage.RoomUpdated(snapshot()))
+            driveBots()
+            abandoned = participants.values.none { !it.isBot }
+        }
+        if (abandoned) onReservationExpired(this)
+    }
 
     private suspend fun removeLocked(playerId: String) {
         val p = participants[playerId] ?: return
+        p.reconnectExpiryJob?.cancel()
+        p.reconnectExpiryJob = null
+        p.reconnectTokenHash = null
         if (game == null) {
             participants.remove(playerId)
             if (playerId == hostId) hostId = participants.values.firstOrNull { !it.isBot }?.id
             broadcast(ServerMessage.RoomUpdated(snapshot()))
         } else {
-            p.connected = false
+            p.connection = null
+            p.connected = true
+            p.isBot = true
+            p.autoPlay = true
+            broadcast(ServerMessage.RoomUpdated(snapshot()))
             driveBots() // seat is now bot-driven; keep the game moving if it was their turn
         }
     }
@@ -200,6 +306,10 @@ class Room(
     }
 
     private suspend fun driveBots() {
+        if (!hasManualHuman()) {
+            scheduleDisconnectedBotStep()
+            return
+        }
         while (true) {
             val g = game ?: return
             when (g.phase) {
@@ -216,6 +326,40 @@ class Room(
                     delay(pace)
                     applyStep(Intent.PlayCard(seat, CallBreakAI.play(BotContext(g, seat, roundHistory.toList()), botDifficulty)))
                 }
+            }
+        }
+    }
+
+    /** Let an empty table progress without monopolising the room lock needed by reconnect. */
+    private fun scheduleDisconnectedBotStep() {
+        if (disconnectedBotJob?.isActive == true) return
+        val current = game ?: return
+        if (current.phase == Phase.GAME_OVER || current.phase == Phase.ROUND_OVER) return
+        disconnectedBotJob = scope.launch {
+            delay(pace)
+            mutex.withLock {
+                disconnectedBotJob = null
+                if (hasManualHuman()) {
+                    driveBots()
+                    return@withLock
+                }
+                val state = game ?: return@withLock
+                when (state.phase) {
+                    Phase.BIDDING -> applyStep(
+                        Intent.MakeCall(
+                            state.currentTurn,
+                            CallBreakAI.call(state.player(state.currentTurn).hand, botDifficulty, config),
+                        ),
+                    )
+                    Phase.PLAYING -> applyStep(
+                        Intent.PlayCard(
+                            state.currentTurn,
+                            CallBreakAI.play(BotContext(state, state.currentTurn, roundHistory.toList()), botDifficulty),
+                        ),
+                    )
+                    Phase.ROUND_OVER, Phase.GAME_OVER -> return@withLock
+                }
+                driveBots()
             }
         }
     }
@@ -269,6 +413,9 @@ class Room(
     private fun seatIsHuman(seat: Seat): Boolean =
         participants.values.any { it.seat == seat && !it.isBot && it.connected && !it.autoPlay }
 
+    private fun hasManualHuman(): Boolean =
+        participants.values.any { !it.isBot && it.connected && !it.autoPlay }
+
     private fun snapshot() = RoomSnapshot(
         code = code,
         players = participants.values.map { it.toInfo() },
@@ -288,5 +435,14 @@ class Room(
         // Friendly names + avatars for the bots that fill empty seats.
         val BOT_NAMES = listOf("Rohan", "Priya", "Akash", "Neha")
         val BOT_AVATARS = listOf("🤖", "👾", "🐱", "🐶")
+
+        val SECURE_RANDOM = SecureRandom()
+
+        fun newReconnectToken(): String = ByteArray(32)
+            .also(SECURE_RANDOM::nextBytes)
+            .let { Base64.getUrlEncoder().withoutPadding().encodeToString(it) }
+
+        fun hashToken(token: String): ByteArray = MessageDigest.getInstance("SHA-256")
+            .digest(token.encodeToByteArray())
     }
 }

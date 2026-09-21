@@ -15,6 +15,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
+import kotlin.test.assertFalse
 
 /** Captures everything the server pushes to a client, standing in for a real socket. */
 private class RecordingConnection(override val playerId: String) : Connection {
@@ -40,6 +41,10 @@ private class ClosableConnection(override val playerId: String) : Connection {
 
     override suspend fun send(message: ServerMessage) {
         check(!closed) { "socket is closed" }
+    }
+
+    override suspend fun close() {
+        closed = true
     }
 }
 
@@ -143,10 +148,135 @@ class RoomTest {
         room.handle("h1", ClientMessage.StartGame)
         assertEquals(Seat.WEST, survivor.latestState()?.currentTurn)
         quitter.closed = true
-        room.onDisconnect("h2")
+        room.onDisconnect("h2", quitter)
 
         val state = survivor.latestState() ?: error("survivor did not receive bot takeover state")
         assertEquals(Seat.SOUTH, state.currentTurn, "bots must play through to the surviving human")
+    }
+
+    @Test
+    fun reconnect_restoresOriginalSeatAndIgnoresStaleSocketDisconnect() = runTest {
+        val room = Room("TEST", pace = 0L, scope = this)
+        val original = RecordingConnection("h1")
+        room.join("h1", "Host", original)
+        val joined = requireNotNull(original.last<ServerMessage.RoomJoined>())
+
+        room.onDisconnect("h1", original)
+        val replacement = RecordingConnection("new-socket")
+        assertTrue(room.reconnect("h1", joined.reconnectToken, replacement))
+        val restored = requireNotNull(replacement.last<ServerMessage.Reconnected>())
+        assertEquals(Seat.SOUTH, restored.yourSeat)
+        assertEquals("Host", restored.snapshot.players.single().name)
+
+        room.onDisconnect("h1", original)
+        room.handle("h1", ClientMessage.Chat("Still connected"))
+        assertEquals("Still connected", replacement.last<ServerMessage.Chat>()?.text)
+    }
+
+    @Test
+    fun newestReconnect_supersedesPreviousSocket() = runTest {
+        val room = Room("TEST", pace = 0L, scope = this)
+        val original = RecordingConnection("h1")
+        room.join("h1", "Host", original)
+        val token = requireNotNull(original.last<ServerMessage.RoomJoined>()).reconnectToken
+
+        val firstReplacement = ClosableConnection("first")
+        val newestReplacement = RecordingConnection("newest")
+        assertTrue(room.reconnect("h1", token, firstReplacement))
+        assertTrue(room.reconnect("h1", token, newestReplacement))
+        runCurrent()
+        assertTrue(firstReplacement.closed)
+
+        room.onDisconnect("h1", firstReplacement)
+        room.handle("h1", ClientMessage.Chat("Newest owns the seat"))
+        assertEquals("Newest owns the seat", newestReplacement.last<ServerMessage.Chat>()?.text)
+    }
+
+    @Test
+    fun reconnectDuringGame_returnsCurrentStateRosterAndAutoPlay() = runTest {
+        val room = Room("TEST", pace = 0L, trickHoldMs = 0L, sweepMs = 0L, scope = this)
+        val host = RecordingConnection("h1")
+        val guest = RecordingConnection("h2")
+        room.join("h1", "Host", host)
+        room.join("h2", "Guest", guest)
+        val token = requireNotNull(guest.last<ServerMessage.RoomJoined>()).reconnectToken
+        room.handle("h1", ClientMessage.StartGame)
+        room.handle("h2", ClientMessage.SetAutoPlay(true))
+        room.onDisconnect("h2", guest)
+
+        val replacement = RecordingConnection("replacement")
+        assertTrue(room.reconnect("h2", token, replacement))
+        val restored = requireNotNull(replacement.last<ServerMessage.Reconnected>())
+        assertEquals(Seat.WEST, restored.yourSeat)
+        assertNotNull(restored.state)
+        assertTrue(restored.autoPlay)
+        assertEquals(4, restored.snapshot.players.size)
+    }
+
+    @Test
+    fun reconnect_rejectsInvalidAndExpiredTokens() = runTest {
+        val room = Room("TEST", reconnectGraceMs = 1_000L, scope = this)
+        val original = RecordingConnection("h1")
+        room.join("h1", "Host", original)
+        val token = requireNotNull(original.last<ServerMessage.RoomJoined>()).reconnectToken
+
+        val invalid = RecordingConnection("bad")
+        assertFalse(room.reconnect("h1", "wrong-token", invalid))
+        assertNotNull(invalid.last<ServerMessage.ReconnectRejected>())
+
+        room.onDisconnect("h1", original)
+        advanceTimeBy(1_001L)
+        runCurrent()
+        val expired = RecordingConnection("late")
+        assertFalse(room.reconnect("h1", token, expired))
+        assertNotNull(expired.last<ServerMessage.ReconnectRejected>())
+    }
+
+    @Test
+    fun explicitLeave_invalidatesReservationImmediately() = runTest {
+        val room = Room("TEST", scope = this)
+        val original = RecordingConnection("h1")
+        room.join("h1", "Host", original)
+        val token = requireNotNull(original.last<ServerMessage.RoomJoined>()).reconnectToken
+
+        assertTrue(room.leave("h1", original))
+        val replacement = RecordingConnection("new")
+        assertFalse(room.reconnect("h1", token, replacement))
+    }
+
+    @Test
+    fun disconnectedHumans_keepReservationsUntilExpiry_andHostTransfers() = runTest {
+        val room = Room("TEST", reconnectGraceMs = 1_000L, scope = this)
+        val host = RecordingConnection("h1")
+        val guest = RecordingConnection("h2")
+        room.join("h1", "Host", host)
+        room.join("h2", "Guest", guest)
+
+        room.onDisconnect("h1", host)
+        room.onDisconnect("h2", guest)
+        assertFalse(room.isAbandoned())
+        assertEquals("h1", room.hostId)
+
+        advanceTimeBy(1_001L)
+        runCurrent()
+        assertTrue(room.isAbandoned())
+        assertEquals(null, room.hostId)
+    }
+
+    @Test
+    fun expiredLobbyHost_transfersOwnershipToReservedGuest() = runTest {
+        val room = Room("TEST", reconnectGraceMs = 1_000L, scope = this)
+        val host = RecordingConnection("h1")
+        val guest = RecordingConnection("h2")
+        room.join("h1", "Host", host)
+        room.join("h2", "Guest", guest)
+
+        room.onDisconnect("h1", host)
+        advanceTimeBy(1_001L)
+        runCurrent()
+
+        assertEquals("h2", room.hostId)
+        assertFalse(room.isAbandoned())
     }
 
     @Test

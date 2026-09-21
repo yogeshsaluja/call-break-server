@@ -49,9 +49,28 @@ class RoomRegistry {
         return room
     }
 
-    /** Drop a player from a room and remove the room if no humans remain. */
-    suspend fun onDisconnect(room: Room, playerId: String) {
-        room.onDisconnect(playerId)
+    /** Reclaim an existing human reservation without creating a new identity or seat. */
+    suspend fun reconnect(code: String, playerId: String, token: String, connection: Connection): Room? {
+        val room = rooms[code.uppercase()]
+        if (room == null) {
+            connection.send(ServerMessage.ReconnectRejected("Room not found or reservation expired"))
+            return null
+        }
+        return if (room.reconnect(playerId, token, connection)) room else null
+    }
+
+    suspend fun leave(room: Room, playerId: String, connection: Connection) {
+        room.leave(playerId, connection)
+        removeIfAbandoned(room)
+    }
+
+    /** Reserve a dropped player's seat; pruning happens only after reservations expire. */
+    suspend fun onDisconnect(room: Room, playerId: String, connection: Connection) {
+        room.onDisconnect(playerId, connection)
+        removeIfAbandoned(room)
+    }
+
+    private suspend fun removeIfAbandoned(room: Room) {
         if (room.isAbandoned() && rooms.remove(room.code, room)) room.close()
     }
 
@@ -60,7 +79,7 @@ class RoomRegistry {
         do {
             code = randomCode()
         } while (rooms.containsKey(code))
-        Room(code).also { rooms[code] = it }
+        Room(code, onReservationExpired = ::removeIfAbandoned).also { rooms[code] = it }
     }
 
     private fun randomCode(): String = (1..CODE_LENGTH)
