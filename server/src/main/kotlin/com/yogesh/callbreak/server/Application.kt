@@ -43,9 +43,9 @@ fun main() {
 }
 
 fun Application.module(
-    paymentService: PaymentService? = PaymentService.fromEnvironment(),
     identitySecurity: IdentitySecurity = IdentitySecurity.fromEnvironment(),
     coinWallets: CoinWalletStore = CoinWalletStore.fromEnvironment(),
+    playBilling: GooglePlayBillingService = GooglePlayBillingService.fromEnvironment(coinWallets),
 ) {
     val applicationLog = environment.log
     // pingPeriod/timeout let the server detect a client that force-quit (its TCP socket
@@ -68,8 +68,8 @@ fun Application.module(
         json(Json { ignoreUnknownKeys = true })
     }
     install(StatusPages) {
-        exception<PaymentRequestException> { call, cause ->
-            call.respond(cause.status, PaymentErrorResponse(cause.message ?: "Payment request failed"))
+        exception<GooglePlayBillingException> { call, cause ->
+            call.respond(cause.status, ApiErrorResponse(cause.message ?: "Google Play purchase failed"))
         }
         exception<Throwable> { call, cause ->
             applicationLog.error("Unhandled request failure", cause)
@@ -84,41 +84,23 @@ fun Application.module(
         get("/") { call.respondText("Call Break server is up") }
 
         authenticate("firebase", optional = !identitySecurity.required) {
-            post("/api/v1/payments/razorpay/orders") {
-                val service = paymentService ?: throw PaymentRequestException(
-                    HttpStatusCode.ServiceUnavailable,
-                    "Razorpay Test Mode is not configured",
-                )
-                val request = call.receive<CreateCoinOrderRequest>()
-                val walletId = call.principal<AuthenticatedUser>()
-                    ?.let { CoinWalletStore.walletIdForUser(it.uid) }
-                    ?: request.walletId
-                call.respond(HttpStatusCode.Created, service.createOrder(request.copy(walletId = walletId)))
-            }
-
-            post("/api/v1/payments/razorpay/verify") {
-                val service = paymentService ?: throw PaymentRequestException(
-                    HttpStatusCode.ServiceUnavailable,
-                    "Razorpay Test Mode is not configured",
-                )
-                val request = call.receive<VerifyCoinPaymentRequest>()
-                val walletId = call.principal<AuthenticatedUser>()
-                    ?.let { CoinWalletStore.walletIdForUser(it.uid) }
-                    ?: request.walletId
-                val verified = service.verify(request.copy(walletId = walletId))
-                val balance = call.principal<AuthenticatedUser>()?.let {
-                    coinWallets.creditOnce(walletId, "payment:${verified.paymentId}", verified.coins)
-                }
-                call.respond(verified.copy(balance = balance))
-            }
-
             get("/api/v1/wallet") {
                 val user = call.principal<AuthenticatedUser>()
                 if (user == null) {
-                    call.respond(HttpStatusCode.Unauthorized, PaymentErrorResponse("Authentication required"))
+                    call.respond(HttpStatusCode.Unauthorized, ApiErrorResponse("Authentication required"))
                     return@get
                 }
-                call.respond(WalletBalanceResponse(coinWallets.balance(CoinWalletStore.walletIdForUser(user.uid))))
+                val walletId = CoinWalletStore.walletIdForUser(user.uid)
+                call.respond(WalletBalanceResponse(coinWallets.balance(walletId), walletId))
+            }
+
+            post("/api/v1/payments/google-play/verify") {
+                val user = call.principal<AuthenticatedUser>()
+                if (user == null) {
+                    call.respond(HttpStatusCode.Unauthorized, ApiErrorResponse("Authentication required"))
+                    return@post
+                }
+                call.respond(playBilling.verifyAndCredit(user, call.receive()))
             }
 
             webSocket("/ws") {

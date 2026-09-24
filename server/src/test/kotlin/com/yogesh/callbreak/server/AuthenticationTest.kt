@@ -2,6 +2,7 @@ package com.yogesh.callbreak.server
 
 import io.ktor.client.request.get
 import io.ktor.client.request.header
+import io.ktor.client.request.post
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.testing.testApplication
@@ -21,6 +22,7 @@ class AuthenticationTest {
         application { module(identitySecurity = security, coinWallets = CoinWalletStore()) }
 
         assertEquals(HttpStatusCode.Unauthorized, client.get("/api/v1/wallet").status)
+        assertEquals(HttpStatusCode.Unauthorized, client.post("/api/v1/payments/google-play/verify").status)
     }
 
     @Test
@@ -31,5 +33,13 @@ class AuthenticationTest {
             header(HttpHeaders.Authorization, "Bearer valid-token")
         }
         assertEquals(HttpStatusCode.OK, response.status)
+    }
+
+    @Test
+    fun removedPaymentRoutesReturnNotFound() = testApplication {
+        application { module(identitySecurity = security, coinWallets = CoinWalletStore()) }
+
+        assertEquals(HttpStatusCode.NotFound, client.post("/api/v1/payments/razorpay/orders").status)
+        assertEquals(HttpStatusCode.NotFound, client.post("/api/v1/payments/razorpay/verify").status)
     }
 }

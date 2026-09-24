@@ -25,6 +25,9 @@ class CoinWalletStore(private val path: Path? = null) {
     fun balance(walletId: String): Int = balances.getOrPut(walletId) { INITIAL_BALANCE }
 
     @Synchronized
+    fun hasTransaction(transactionId: String): Boolean = transactionId in transactions
+
+    @Synchronized
     fun creditOnce(walletId: String, transactionId: String, amount: Int): Int {
         require(amount > 0)
         if (!transactions.add(transactionId)) return balance(walletId)
@@ -80,7 +83,10 @@ class CoinWalletStore(private val path: Path? = null) {
 }
 
 @Serializable
-data class WalletBalanceResponse(val balance: Int)
+data class WalletBalanceResponse(val balance: Int, val walletId: String = "")
+
+@Serializable
+data class ApiErrorResponse(val message: String)
 
 @Serializable
 private data class WalletEntry(
