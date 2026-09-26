@@ -48,9 +48,12 @@ jobs:
             sudo install -d -o callbreak -g callbreak -m 0700 /opt/callbreak-server/data
             sudo install -m 0644 deploy/callbreak.service /etc/systemd/system/callbreak.service
             sudo install -m 0644 deploy/nginx-api.playcrewgames.online.conf \
-              /etc/nginx/sites-available/api.playcrewgames.online
-            sudo ln -sfn /etc/nginx/sites-available/api.playcrewgames.online \
-              /etc/nginx/sites-enabled/api.playcrewgames.online
+              /etc/nginx/sites-available/playcrew
+            if [ -L /etc/nginx/sites-enabled/api.playcrewgames.online ]; then
+              sudo unlink /etc/nginx/sites-enabled/api.playcrewgames.online
+            fi
+            sudo ln -sfn /etc/nginx/sites-available/playcrew \
+              /etc/nginx/sites-enabled/playcrew
             sudo systemctl daemon-reload
             sudo nginx -t
             sudo systemctl reload nginx
