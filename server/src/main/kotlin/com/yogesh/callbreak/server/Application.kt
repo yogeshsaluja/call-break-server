@@ -100,7 +100,7 @@ fun Application.module(
     routing {
         get("/") { call.respondText("Call Break server is up") }
 
-        authenticate("firebase", optional = !identitySecurity.required) {
+        authenticate("firebase", optional = true) {
             get("/api/v1/profile") {
                 val user = call.principal<AuthenticatedUser>()
                 if (user == null) {

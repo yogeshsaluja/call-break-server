@@ -9,9 +9,10 @@ import io.ktor.client.statement.bodyAsText
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.testing.testApplication
+import io.ktor.websocket.close
+import kotlinx.coroutines.isActive
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertFails
 import kotlin.test.assertTrue
 
 class AuthenticationTest {
@@ -33,13 +34,13 @@ class AuthenticationTest {
     }
 
     @Test
-    fun websocketRejectsMissingTokenBeforeUpgrade() = testApplication {
+    fun websocketAllowsGuestWithoutToken() = testApplication {
         application { module(identitySecurity = security, coinWallets = CoinWalletStore()) }
         val websocketClient = createClient { install(WebSockets) }
 
-        assertFails {
-            websocketClient.webSocketSession(path = "/ws")
-        }
+        val session = websocketClient.webSocketSession(path = "/ws")
+        assertTrue(session.isActive)
+        session.close()
     }
 
     @Test
