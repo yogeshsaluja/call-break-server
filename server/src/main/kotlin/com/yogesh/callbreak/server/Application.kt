@@ -46,6 +46,7 @@ fun Application.module(
     identitySecurity: IdentitySecurity = IdentitySecurity.fromEnvironment(),
     coinWallets: CoinWalletStore = CoinWalletStore.fromEnvironment(),
     playBilling: GooglePlayBillingService = GooglePlayBillingService.fromEnvironment(coinWallets),
+    userProfiles: UserProfileStore = UserProfileStore.fromEnvironment(),
 ) {
     val applicationLog = environment.log
     // pingPeriod/timeout let the server detect a client that force-quit (its TCP socket
@@ -77,13 +78,53 @@ fun Application.module(
         }
     }
 
-    val registry = RoomRegistry(coinWallets)
+    val maximumRooms = System.getenv("MAX_ACTIVE_ROOMS")?.toIntOrNull()
+        ?.coerceIn(10, SecurityPolicy.MAX_ACTIVE_ROOMS)
+        ?: SecurityPolicy.MAX_ACTIVE_ROOMS
+    val registry = RoomRegistry(coinWallets, maximumRooms)
     val connections = ConnectionLimiter()
+    val userConnections = ConnectionLimiter(SecurityPolicy.MAX_CONNECTIONS_PER_USER)
+    val roomEntries = KeyedRateLimiter(
+        SecurityPolicy.MAX_ROOM_ENTRIES_PER_WINDOW,
+        SecurityPolicy.ABUSE_WINDOW.inWholeMilliseconds,
+    )
+    val roomCreations = KeyedRateLimiter(
+        SecurityPolicy.MAX_ROOM_CREATIONS_PER_WINDOW,
+        SecurityPolicy.ABUSE_WINDOW.inWholeMilliseconds,
+    )
+    val purchaseVerifications = KeyedRateLimiter(
+        SecurityPolicy.MAX_PURCHASE_VERIFICATIONS_PER_WINDOW,
+        SecurityPolicy.ABUSE_WINDOW.inWholeMilliseconds,
+    )
 
     routing {
         get("/") { call.respondText("Call Break server is up") }
 
         authenticate("firebase", optional = !identitySecurity.required) {
+            get("/api/v1/profile") {
+                val user = call.principal<AuthenticatedUser>()
+                if (user == null) {
+                    call.respond(HttpStatusCode.Unauthorized, ApiErrorResponse("Authentication required"))
+                    return@get
+                }
+                call.respond(userProfiles.get(user) ?: userProfiles.sync(user))
+            }
+
+            post("/api/v1/profile/sync") {
+                val user = call.principal<AuthenticatedUser>()
+                if (user == null) {
+                    call.respond(HttpStatusCode.Unauthorized, ApiErrorResponse("Authentication required"))
+                    return@post
+                }
+                val profile = userProfiles.sync(user)
+                applicationLog.info(
+                    "Authenticated profile synced user={} provider={}",
+                    profile.userId.take(8),
+                    profile.provider ?: "unknown",
+                )
+                call.respond(profile)
+            }
+
             get("/api/v1/wallet") {
                 val user = call.principal<AuthenticatedUser>()
                 if (user == null) {
@@ -100,6 +141,14 @@ fun Application.module(
                     call.respond(HttpStatusCode.Unauthorized, ApiErrorResponse("Authentication required"))
                     return@post
                 }
+                val remoteAddress = call.request.origin.remoteHost
+                if (
+                    !purchaseVerifications.tryAcquire("user:${user.uid}") ||
+                    !purchaseVerifications.tryAcquire("ip:$remoteAddress")
+                ) {
+                    call.respond(HttpStatusCode.TooManyRequests, ApiErrorResponse("Too many purchase attempts"))
+                    return@post
+                }
                 call.respond(playBilling.verifyAndCredit(user, call.receive()))
             }
 
@@ -109,8 +158,14 @@ fun Application.module(
                     close(CloseReason(CloseReason.Codes.VIOLATED_POLICY, "Connection limit exceeded"))
                     return@webSocket
                 }
-                var playerId = UUID.randomUUID().toString().take(8)
                 val authenticatedUser = call.principal<AuthenticatedUser>()
+                val userConnectionKey = authenticatedUser?.uid
+                if (userConnectionKey != null && !userConnections.tryAcquire(userConnectionKey)) {
+                    connections.release(remoteAddress)
+                    close(CloseReason(CloseReason.Codes.VIOLATED_POLICY, "Account connection limit exceeded"))
+                    return@webSocket
+                }
+                var playerId = UUID.randomUUID().toString().take(8)
                 val walletId = authenticatedUser?.let { CoinWalletStore.walletIdForUser(it.uid) }
                 val connection = SocketConnection(playerId, this)
                 var room: Room? = null
@@ -147,6 +202,29 @@ fun Application.module(
                         }
                         val current = room
                         if (current == null) {
+                            val isEntryMessage =
+                                msg is ClientMessage.CreateRoom ||
+                                    msg is ClientMessage.JoinByCode ||
+                                    msg is ClientMessage.QuickMatch ||
+                                    msg is ClientMessage.Reconnect
+                            val actorKey = "user:${authenticatedUser?.uid ?: "anonymous:$remoteAddress"}"
+                            if (
+                                isEntryMessage &&
+                                (!roomEntries.tryAcquire(actorKey) ||
+                                    !roomEntries.tryAcquire("ip:$remoteAddress"))
+                            ) {
+                                connection.send(ServerMessage.ErrorMsg("Too many room attempts. Please wait a minute"))
+                                continue
+                            }
+                            val createsRoom = msg is ClientMessage.CreateRoom || msg is ClientMessage.QuickMatch
+                            if (
+                                createsRoom &&
+                                (!roomCreations.tryAcquire(actorKey) ||
+                                    !roomCreations.tryAcquire("ip:$remoteAddress"))
+                            ) {
+                                connection.send(ServerMessage.ErrorMsg("Too many new games. Please wait a minute"))
+                                continue
+                            }
                             room =
                                 when (msg) {
                                     is ClientMessage.CreateRoom ->
@@ -175,7 +253,13 @@ fun Application.module(
                                             walletId,
                                         )
                                     is ClientMessage.Reconnect -> {
-                                        registry.reconnect(msg.roomCode, msg.playerId, msg.reconnectToken, connection)
+                                        registry.reconnect(
+                                            msg.roomCode,
+                                            msg.playerId,
+                                            msg.reconnectToken,
+                                            connection,
+                                            walletId,
+                                        )
                                             ?.also { playerId = msg.playerId }
                                     }
                                     else -> {
@@ -194,6 +278,7 @@ fun Application.module(
                     }
                 } finally {
                     room?.let { registry.onDisconnect(it, playerId, connection) }
+                    userConnectionKey?.let(userConnections::release)
                     connections.release(remoteAddress)
                 }
             }

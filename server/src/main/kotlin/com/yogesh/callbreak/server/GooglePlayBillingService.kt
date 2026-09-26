@@ -11,6 +11,7 @@ import java.net.URLEncoder
 import java.net.http.HttpClient
 import java.net.http.HttpRequest
 import java.net.http.HttpResponse
+import java.time.Duration
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
 
@@ -98,7 +99,9 @@ class GooglePlayDeveloperApiVerifier(
     private val credentialsProvider: () -> GoogleCredentials = {
         GoogleCredentials.getApplicationDefault().createScoped(ANDROID_PUBLISHER_SCOPE)
     },
-    private val client: HttpClient = HttpClient.newHttpClient(),
+    private val client: HttpClient = HttpClient.newBuilder()
+        .connectTimeout(Duration.ofSeconds(5))
+        .build(),
 ) : GooglePlayPurchaseVerifier {
     private val credentials by lazy(credentialsProvider)
 
@@ -139,6 +142,7 @@ class GooglePlayDeveloperApiVerifier(
     private fun authorizedRequest(url: String): HttpRequest.Builder {
         credentials.refreshIfExpired()
         return HttpRequest.newBuilder(URI.create(url))
+            .timeout(Duration.ofSeconds(10))
             .header("Authorization", "Bearer ${credentials.accessToken.tokenValue}")
             .header("Content-Type", "application/json")
     }

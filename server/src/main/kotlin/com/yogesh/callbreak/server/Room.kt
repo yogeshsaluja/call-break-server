@@ -90,6 +90,7 @@ class Room(
         walletId: String? = null,
     ): Seat? = mutex.withLock {
         if (game != null) return@withLock null
+        if (walletId != null && participants.values.any { it.walletId == walletId }) return@withLock null
         val free = Seat.entries.firstOrNull { seat -> participants.values.none { it.seat == seat } }
             ?: return@withLock null
         if (hostId == null) hostId = playerId
@@ -151,10 +152,15 @@ class Room(
     }
 
     /** Reattach a socket to a reserved seat and return a complete authoritative snapshot. */
-    suspend fun reconnect(playerId: String, token: String, connection: Connection): Boolean = mutex.withLock {
+    suspend fun reconnect(
+        playerId: String,
+        token: String,
+        connection: Connection,
+        walletId: String? = null,
+    ): Boolean = mutex.withLock {
         val participant = participants[playerId]
         val expectedHash = participant?.reconnectTokenHash
-        if (participant == null || participant.isBot || expectedHash == null ||
+        if (participant == null || participant.isBot || expectedHash == null || participant.walletId != walletId ||
             !MessageDigest.isEqual(expectedHash, hashToken(token))
         ) {
             connection.send(ServerMessage.ReconnectRejected("Seat reservation is invalid or expired"))

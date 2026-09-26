@@ -14,6 +14,7 @@ import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlin.test.assertFalse
 
@@ -77,6 +78,28 @@ class RoomTest {
 
         assertEquals(370, wallets.balance("wallet-1"))
         assertEquals(370, host.last<ServerMessage.WalletBalance>()?.balance)
+    }
+
+    @Test
+    fun sameAuthenticatedWalletCannotOccupyTwoSeats() = runTest {
+        val room = Room("TEST")
+        val host = RecordingConnection("h1")
+        val duplicate = RecordingConnection("h2")
+
+        assertEquals(Seat.SOUTH, room.join("h1", "Host", host, walletId = "wallet-1"))
+        assertNull(room.join("h2", "Duplicate", duplicate, walletId = "wallet-1"))
+    }
+
+    @Test
+    fun reconnectRequiresTheOriginalAuthenticatedWallet() = runTest {
+        val room = Room("TEST")
+        val original = RecordingConnection("h1")
+        room.join("h1", "Host", original, walletId = "wallet-1")
+        val token = requireNotNull(original.last<ServerMessage.RoomJoined>()).reconnectToken
+        room.onDisconnect("h1", original)
+
+        assertFalse(room.reconnect("h1", token, RecordingConnection("wrong"), walletId = "wallet-2"))
+        assertTrue(room.reconnect("h1", token, RecordingConnection("right"), walletId = "wallet-1"))
     }
 
     @Test
@@ -320,6 +343,7 @@ class RoomTest {
         room.handle("h1", ClientMessage.StartGame)
         room.handle("h1", ClientMessage.SetAutoPlay(true))
         room.handle("h2", ClientMessage.SetAutoPlay(true))
+        runCurrent()
         assertEquals(Phase.ROUND_OVER, host.latestState()?.phase)
 
         room.handle("h1", ClientMessage.SetAutoPlay(false))
@@ -337,6 +361,7 @@ class RoomTest {
         room.join("h1", "Host", host)
         room.handle("h1", ClientMessage.StartGame)
         room.handle("h1", ClientMessage.SetAutoPlay(true))
+        runCurrent()
         assertEquals(Phase.ROUND_OVER, host.latestState()?.phase)
 
         advanceTimeBy(5_000L)

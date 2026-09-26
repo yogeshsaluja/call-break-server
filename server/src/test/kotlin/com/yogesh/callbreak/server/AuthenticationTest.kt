@@ -1,13 +1,18 @@
 package com.yogesh.callbreak.server
 
+import io.ktor.client.plugins.websocket.WebSockets
+import io.ktor.client.plugins.websocket.webSocketSession
 import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.request.post
+import io.ktor.client.statement.bodyAsText
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.testing.testApplication
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFails
+import kotlin.test.assertTrue
 
 class AuthenticationTest {
     private val security = IdentitySecurity(
@@ -23,6 +28,41 @@ class AuthenticationTest {
 
         assertEquals(HttpStatusCode.Unauthorized, client.get("/api/v1/wallet").status)
         assertEquals(HttpStatusCode.Unauthorized, client.post("/api/v1/payments/google-play/verify").status)
+        assertEquals(HttpStatusCode.Unauthorized, client.get("/api/v1/profile").status)
+        assertEquals(HttpStatusCode.Unauthorized, client.post("/api/v1/profile/sync").status)
+    }
+
+    @Test
+    fun websocketRejectsMissingTokenBeforeUpgrade() = testApplication {
+        application { module(identitySecurity = security, coinWallets = CoinWalletStore()) }
+        val websocketClient = createClient { install(WebSockets) }
+
+        assertFails {
+            websocketClient.webSocketSession(path = "/ws")
+        }
+    }
+
+    @Test
+    fun verifiedIdentityCanSyncAndRestoreProfile() = testApplication {
+        application {
+            module(
+                identitySecurity = security,
+                coinWallets = CoinWalletStore(),
+                userProfiles = UserProfileStore(),
+            )
+        }
+
+        val synced = client.post("/api/v1/profile/sync") {
+            header(HttpHeaders.Authorization, "Bearer valid-token")
+        }
+        assertEquals(HttpStatusCode.OK, synced.status)
+        assertTrue(synced.bodyAsText().contains("Player"))
+
+        val restored = client.get("/api/v1/profile") {
+            header(HttpHeaders.Authorization, "Bearer valid-token")
+        }
+        assertEquals(HttpStatusCode.OK, restored.status)
+        assertTrue(restored.bodyAsText().contains("Player"))
     }
 
     @Test

@@ -40,7 +40,7 @@ class ApplicationWsTest {
 
     @Test
     fun createThenJoinByCode_assignsSeats_andStartDealsBothClients() = testApplication {
-        application { module() }
+        application { module(identitySecurity = IdentitySecurity(null, required = false)) }
         val client = createClient { install(WebSockets) }
 
         val host = client.webSocketSession(path = "/ws")
@@ -71,7 +71,7 @@ class ApplicationWsTest {
 
     @Test
     fun quickMatch_pairsTwoClientsIntoTheSameRoom() = testApplication {
-        application { module() }
+        application { module(identitySecurity = IdentitySecurity(null, required = false)) }
         val client = createClient { install(WebSockets) }
 
         val a = client.webSocketSession(path = "/ws")
@@ -92,7 +92,7 @@ class ApplicationWsTest {
 
     @Test
     fun joiningAnUnknownCode_returnsError() = testApplication {
-        application { module() }
+        application { module(identitySecurity = IdentitySecurity(null, required = false)) }
         val client = createClient { install(WebSockets) }
 
         val lonely = client.webSocketSession(path = "/ws")
@@ -105,7 +105,7 @@ class ApplicationWsTest {
 
     @Test
     fun reconnect_replacesSocketAndReturnsAuthoritativeSeat() = testApplication {
-        application { module() }
+        application { module(identitySecurity = IdentitySecurity(null, required = false)) }
         val client = createClient { install(WebSockets) }
 
         val original = client.webSocketSession(path = "/ws")

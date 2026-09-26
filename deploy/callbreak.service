@@ -14,16 +14,27 @@ EnvironmentFile=-/etc/callbreak/server.env
 ExecStart=/opt/callbreak-server/server/build/install/server/bin/server
 Restart=on-failure
 RestartSec=5
+UMask=0077
+MemoryHigh=640M
+MemoryMax=768M
+TasksMax=256
+LimitNOFILE=4096
 
 NoNewPrivileges=true
 PrivateTmp=true
+PrivateDevices=true
 ProtectSystem=strict
 ProtectHome=true
+ProtectHostname=true
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true
+ProtectClock=true
 RestrictSUIDSGID=true
+RestrictNamespaces=true
+RestrictRealtime=true
 LockPersonality=true
+SystemCallArchitectures=native
 ReadWritePaths=/opt/callbreak-server/data
 
 [Install]

@@ -11,7 +11,10 @@ import java.security.SecureRandom
  * entry points (create / join-by-code / quick-match) and prunes rooms once every human
  * has left.
  */
-class RoomRegistry(private val coinWallets: CoinWalletStore = CoinWalletStore()) {
+class RoomRegistry(
+    private val coinWallets: CoinWalletStore = CoinWalletStore(),
+    private val maximumRooms: Int = SecurityPolicy.MAX_ACTIVE_ROOMS,
+) {
     private val rooms = ConcurrentHashMap<String, Room>()
     private val createMutex = Mutex()
 
@@ -22,8 +25,12 @@ class RoomRegistry(private val coinWallets: CoinWalletStore = CoinWalletStore())
         connection: Connection,
         avatar: String = "",
         walletId: String? = null,
-    ): Room {
+    ): Room? {
         val room = newRoom()
+        if (room == null) {
+            connection.send(ServerMessage.ErrorMsg("Server is busy. Please try again shortly"))
+            return null
+        }
         room.join(playerId, name, connection, avatar, walletId)
         return room
     }
@@ -57,25 +64,35 @@ class RoomRegistry(private val coinWallets: CoinWalletStore = CoinWalletStore())
         connection: Connection,
         avatar: String = "",
         walletId: String? = null,
-    ): Room {
+    ): Room? {
         for (candidate in rooms.values) {
             if (candidate.hasFreeHumanSeat() && candidate.join(playerId, name, connection, avatar, walletId) != null) {
                 return candidate
             }
         }
         val room = newRoom()
+        if (room == null) {
+            connection.send(ServerMessage.ErrorMsg("Server is busy. Please try again shortly"))
+            return null
+        }
         room.join(playerId, name, connection, avatar, walletId)
         return room
     }
 
     /** Reclaim an existing human reservation without creating a new identity or seat. */
-    suspend fun reconnect(code: String, playerId: String, token: String, connection: Connection): Room? {
+    suspend fun reconnect(
+        code: String,
+        playerId: String,
+        token: String,
+        connection: Connection,
+        walletId: String?,
+    ): Room? {
         val room = rooms[code.uppercase()]
         if (room == null) {
             connection.send(ServerMessage.ReconnectRejected("Room not found or reservation expired"))
             return null
         }
-        return if (room.reconnect(playerId, token, connection)) room else null
+        return if (room.reconnect(playerId, token, connection, walletId)) room else null
     }
 
     suspend fun leave(room: Room, playerId: String, connection: Connection) {
@@ -93,7 +110,8 @@ class RoomRegistry(private val coinWallets: CoinWalletStore = CoinWalletStore())
         if (room.isAbandoned() && rooms.remove(room.code, room)) room.close()
     }
 
-    private suspend fun newRoom(): Room = createMutex.withLock {
+    private suspend fun newRoom(): Room? = createMutex.withLock {
+        if (rooms.size >= maximumRooms) return@withLock null
         var code: String
         do {
             code = randomCode()

@@ -25,4 +25,17 @@ class SecurityPolicyTest {
         limiter.release("127.0.0.1")
         assertTrue(limiter.tryAcquire("127.0.0.1"))
     }
+
+    @Test
+    fun keyedLimiterSurvivesDisconnectsAndResetsAfterWindow() {
+        var now = 0L
+        val limiter = KeyedRateLimiter(maximum = 2, windowMillis = 1_000) { now }
+
+        assertTrue(limiter.tryAcquire("user-1"))
+        assertTrue(limiter.tryAcquire("user-1"))
+        assertFalse(limiter.tryAcquire("user-1"))
+
+        now = 1_000
+        assertTrue(limiter.tryAcquire("user-1"))
+    }
 }
