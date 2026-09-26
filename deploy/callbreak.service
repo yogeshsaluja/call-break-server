@@ -11,7 +11,7 @@ WorkingDirectory=/opt/callbreak-server
 Environment=HOST=127.0.0.1
 Environment=PORT=8081
 EnvironmentFile=-/etc/callbreak/server.env
-ExecStart=/opt/callbreak-server/server/build/install/server/bin/server
+ExecStart=/opt/callbreak-server/current/bin/server
 Restart=on-failure
 RestartSec=5
 UMask=0077

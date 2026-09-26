@@ -21,7 +21,7 @@ jobs:
           script_stop: true
 
           script: |
-            set -e
+            set -euo pipefail
 
             echo "================================"
             echo "Deploying CallBreak"
@@ -32,7 +32,9 @@ jobs:
             export JAVA_HOME=/usr/lib/jvm/java-21-openjdk-arm64
             export PATH="$JAVA_HOME/bin:$PATH"
 
-            echo "Preserving local build artifacts..."
+            grep -qxF '/data/' .git/info/exclude || printf '%s\n' '/data/' >> .git/info/exclude
+
+            echo "Preserving local server changes..."
             if ! git diff --quiet || ! git diff --cached --quiet || [ -n "$(git ls-files --others --exclude-standard)" ]; then
               git stash push --include-untracked --message "pre-deploy-${{ github.sha }}"
             fi
@@ -40,9 +42,24 @@ jobs:
             echo "Pulling latest code..."
             git pull --ff-only origin main
 
-            echo "Building CallBreak..."
+            RELEASE_ID="${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}"
+            BUILD_DIR="/tmp/callbreak-build-$RELEASE_ID"
+            RELEASE_DIR="/opt/callbreak-server/releases/$RELEASE_ID"
+
+            echo "Building CallBreak in staging..."
             java -version
-            ./gradlew clean :server:installDist
+            mkdir -p "$BUILD_DIR"
+            git archive --format=tar HEAD | tar -xf - -C "$BUILD_DIR"
+            cd "$BUILD_DIR"
+            ./gradlew :server:installDist
+
+            echo "Installing release $RELEASE_ID..."
+            sudo install -d -o root -g root -m 0755 /opt/callbreak-server/releases
+            sudo install -d -o root -g root -m 0755 "$RELEASE_DIR"
+            sudo cp -a server/build/install/server/. "$RELEASE_DIR/"
+            sudo ln -sfn "$RELEASE_DIR" /opt/callbreak-server/current
+
+            cd /opt/callbreak-server
 
             echo "Installing hardened service and proxy configuration..."
             sudo install -d -o callbreak -g callbreak -m 0700 /opt/callbreak-server/data
@@ -69,6 +86,8 @@ jobs:
 
             echo "Checking application..."
             curl --fail http://127.0.0.1:8081/
+
+            rm -rf "$BUILD_DIR"
 
             echo "================================"
             echo "Deployment Successful!"

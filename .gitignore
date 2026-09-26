@@ -2,7 +2,7 @@
 .kotlin/
 **/.kotlin/
 **/build/
+/data/
 .DS_Store
 local.properties
 *.iml
-
