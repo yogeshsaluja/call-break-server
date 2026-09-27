@@ -423,16 +423,19 @@ class Room(
 
         game = next
         broadcast(ServerMessage.StateUpdate(next))
-        if (pre.phase != Phase.GAME_OVER && next.phase == Phase.GAME_OVER) awardWinner(next)
+        if (pre.phase != Phase.GAME_OVER && next.phase == Phase.GAME_OVER) awardWinners(next)
         if (next.phase == Phase.ROUND_OVER) scheduleRoundAdvance()
     }
 
-    private suspend fun awardWinner(state: GameState) {
-        val winningSeat = state.players.maxByOrNull { it.value.totalScore }?.key ?: return
-        val winner = participants.values.firstOrNull { it.seat == winningSeat } ?: return
-        val walletId = winner.walletId ?: return
-        val balance = coinWallets.creditOnce(walletId, "game:$code:winner", WIN_POT)
-        winner.connection?.send(ServerMessage.WalletBalance(balance))
+    internal suspend fun awardWinners(state: GameState) {
+        val winningSeats = CallBreakEngine.gameWinners(state)
+        if (winningSeats.isEmpty()) return
+        val prize = WIN_POT / winningSeats.size
+        participants.values.filter { it.seat in winningSeats }.forEach { winner ->
+            val walletId = winner.walletId ?: return@forEach
+            val balance = coinWallets.creditOnce(walletId, "game:$code:winner:${winner.id}", prize)
+            winner.connection?.send(ServerMessage.WalletBalance(balance))
+        }
     }
 
     private fun scheduleRoundAdvance() {

@@ -81,6 +81,34 @@ class RoomTest {
     }
 
     @Test
+    fun tiedWinnersSplitPotExactlyOnce() = runTest {
+        val wallets = CoinWalletStore()
+        val room = Room("TIE1", coinWallets = wallets)
+        val first = RecordingConnection("h1")
+        val second = RecordingConnection("h2")
+        room.join("h1", "First", first, walletId = "wallet-1")
+        room.join("h2", "Second", second, walletId = "wallet-2")
+        val state =
+            CallBreakEngine.newGame(seed = 9L).let { game ->
+                game.copy(
+                    phase = Phase.GAME_OVER,
+                    players =
+                        game.players.mapValues { (seat, player) ->
+                            player.copy(totalScore = if (seat == Seat.SOUTH || seat == Seat.WEST) 15.0 else 10.0)
+                        },
+                )
+            }
+
+        room.awardWinners(state)
+        room.awardWinners(state)
+
+        assertEquals(460, wallets.balance("wallet-1"))
+        assertEquals(460, wallets.balance("wallet-2"))
+        assertEquals(460, first.last<ServerMessage.WalletBalance>()?.balance)
+        assertEquals(460, second.last<ServerMessage.WalletBalance>()?.balance)
+    }
+
+    @Test
     fun sameAuthenticatedWalletCannotOccupyTwoSeats() = runTest {
         val room = Room("TEST")
         val host = RecordingConnection("h1")

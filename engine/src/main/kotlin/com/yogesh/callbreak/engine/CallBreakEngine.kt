@@ -92,6 +92,12 @@ object CallBreakEngine {
     fun roundScore(call: Int, won: Int, config: CallBreakConfig = CallBreakConfig()): Double =
         if (won >= call) call + (won - call) * config.overtrickValue else -call.toDouble()
 
+    /** Every seat tied for the highest final score shares the win. */
+    fun gameWinners(state: GameState): Set<Seat> {
+        val winningScore = state.players.values.maxOfOrNull { it.totalScore } ?: return emptySet()
+        return state.players.values.filter { it.totalScore == winningScore }.mapTo(linkedSetOf()) { it.seat }
+    }
+
     fun applyIntent(state: GameState, intent: Intent): ApplyResult = when (intent) {
         is Intent.MakeCall -> handleCall(state, intent)
         is Intent.PlayCard -> handlePlay(state, intent)
