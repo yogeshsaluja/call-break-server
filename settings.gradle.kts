@@ -16,10 +16,14 @@ dependencyResolutionManagement {
 
 rootProject.name = "CallBreakServer"
 
-// The rules engine, bot AI, and wire protocol are compiled here as pure-JVM modules from
-// the SAME source files the Android app uses (see each module's build.gradle.kts srcDir),
-// keeping one source of truth. Only :server physically lives in this project.
+// Each server owns a pure-JVM engine, bot AI and wire protocol implementation. Keep the
+// protocol contracts synchronized with the matching Android modules and cover them with
+// round-trip and real-WebSocket tests.
 include(":engine")
 include(":ai")
 include(":protocol")
 include(":server")
+include(":ludo-engine")
+include(":ludo-ai")
+include(":ludo-protocol")
+include(":ludo-server")

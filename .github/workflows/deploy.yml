@@ -46,24 +46,30 @@ jobs:
             BUILD_DIR="/tmp/callbreak-build-$RELEASE_ID"
             RELEASE_DIR="/opt/callbreak-server/releases/$RELEASE_ID"
 
-            echo "Building CallBreak in staging..."
+            echo "Building Call Break and Ludo in staging..."
             java -version
             mkdir -p "$BUILD_DIR"
             git archive --format=tar HEAD | tar -xf - -C "$BUILD_DIR"
             cd "$BUILD_DIR"
-            ./gradlew :server:installDist
+            ./gradlew :server:installDist :ludo-server:installDist
 
             echo "Installing release $RELEASE_ID..."
+            CALLBREAK_RELEASE_DIR="$RELEASE_DIR/callbreak"
+            LUDO_RELEASE_DIR="$RELEASE_DIR/ludo"
             sudo install -d -o root -g root -m 0755 /opt/callbreak-server/releases
             sudo install -d -o root -g root -m 0755 "$RELEASE_DIR"
-            sudo cp -a server/build/install/server/. "$RELEASE_DIR/"
-            sudo ln -sfn "$RELEASE_DIR" /opt/callbreak-server/current
+            sudo install -d -o root -g root -m 0755 "$CALLBREAK_RELEASE_DIR" "$LUDO_RELEASE_DIR"
+            sudo cp -a server/build/install/server/. "$CALLBREAK_RELEASE_DIR/"
+            sudo cp -a ludo-server/build/install/ludo-server/. "$LUDO_RELEASE_DIR/"
+            sudo ln -sfn "$CALLBREAK_RELEASE_DIR" /opt/callbreak-server/current
+            sudo ln -sfn "$LUDO_RELEASE_DIR" /opt/callbreak-server/ludo-current
 
             cd /opt/callbreak-server
 
             echo "Installing hardened service and proxy configuration..."
             sudo install -d -o callbreak -g callbreak -m 0700 /opt/callbreak-server/data
             sudo install -m 0644 deploy/callbreak.service /etc/systemd/system/callbreak.service
+            sudo install -m 0644 deploy/ludo.service /etc/systemd/system/ludo.service
             sudo install -m 0644 deploy/nginx-api.playcrewgames.online.conf \
               /etc/nginx/sites-available/playcrew
             if [ -L /etc/nginx/sites-enabled/api.playcrewgames.online ]; then
@@ -75,17 +81,20 @@ jobs:
             sudo nginx -t
             sudo systemctl reload nginx
 
-            echo "Restarting CallBreak..."
-            sudo systemctl restart callbreak
+            echo "Restarting game services..."
+            sudo systemctl enable ludo
+            sudo systemctl restart callbreak ludo
 
             echo "Waiting for application..."
             sleep 5
 
             echo "Checking service..."
             sudo systemctl is-active --quiet callbreak
+            sudo systemctl is-active --quiet ludo
 
-            echo "Checking application..."
+            echo "Checking applications..."
             curl --fail http://127.0.0.1:8081/
+            curl --fail http://127.0.0.1:8083/
 
             rm -rf "$BUILD_DIR"
 

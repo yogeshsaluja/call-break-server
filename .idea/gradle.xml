@@ -11,6 +11,10 @@
             <option value="$PROJECT_DIR$" />
             <option value="$PROJECT_DIR$/ai" />
             <option value="$PROJECT_DIR$/engine" />
+            <option value="$PROJECT_DIR$/ludo-ai" />
+            <option value="$PROJECT_DIR$/ludo-engine" />
+            <option value="$PROJECT_DIR$/ludo-protocol" />
+            <option value="$PROJECT_DIR$/ludo-server" />
             <option value="$PROJECT_DIR$/protocol" />
             <option value="$PROJECT_DIR$/server" />
           </set>
